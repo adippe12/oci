@@ -74,32 +74,48 @@ def main():
         print(f"Errore di inizializzazione del client OCI: {e}")
         sys.exit(1)
 
+    # Log dei parametri di configurazione per verifica iniziale
+    compartment_id = os.getenv("OCI_COMPARTMENT_ID")
+    availability_domain = os.getenv("OCI_AD")
+    image_id = os.getenv("OCI_IMAGE_ID")
+    subnet_id = os.getenv("OCI_SUBNET_ID")
+    display_name = os.getenv("OCI_DISPLAY_NAME", "Koyeb-ARM-Instance")
+
+    print("--- Parametri di Avvio Istanza ---")
+    print(f"Compartment ID:      {compartment_id}")
+    print(f"Availability Domain: {availability_domain}")
+    print(f"Image ID:            {image_id}")
+    print(f"Subnet ID:           {subnet_id}")
+    print(f"Display Name:        {display_name}")
+    print(f"Shape:               VM.Standard.A1.Flex (4 oCPUs, 24 GB RAM)")
+    print("----------------------------------")
+
     launch_details = oci.core.models.LaunchInstanceDetails(
-        compartment_id=os.getenv("OCI_COMPARTMENT_ID"),
-        availability_domain=os.getenv("OCI_AD"),
+        compartment_id=compartment_id,
+        availability_domain=availability_domain,
         shape="VM.Standard.A1.Flex",
         shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=4,
             memory_in_gbs=24
         ),
         source_details=oci.core.models.InstanceSourceViaImageDetails(
-            image_id=os.getenv("OCI_IMAGE_ID")
+            image_id=image_id
         ),
         create_vnic_details=oci.core.models.CreateVnicDetails(
-            subnet_id=os.getenv("OCI_SUBNET_ID"),
+            subnet_id=subnet_id,
             assign_public_ip=True
         ),
         metadata={
             "ssh_authorized_keys": os.getenv("OCI_SSH_PUBLIC_KEY")
         },
-        display_name=os.getenv("OCI_DISPLAY_NAME", "Koyeb-ARM-Instance")
+        display_name=display_name
     )
 
     send_telegram_message("🤖 *Script avviato su Koyeb!* Inizio i tentativi per la risorsa ARM.")
 
     while True:
         try:
-            print("Tentativo di creazione istanza...")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Tentativo di creazione istanza...")
             response = compute_client.launch_instance(launch_details)
             
             instance = response.data
@@ -112,19 +128,39 @@ def main():
             )
             print(msg)
             send_telegram_message(msg)
-            break  # Interrompe il ciclo ed esce dallo script con successo
+            break
             
         except oci.exceptions.ServiceError as e:
-            if e.status == 500 or "Out of host capacity" in e.message or e.status == 429:
-                print(f"Capacità non disponibile (Errore {e.status}). Nuovo tentativo a breve...")
+            # Rileva se si tratta di un problema di capacità o di un altro errore di servizio
+            is_capacity_issue = (
+                e.status == 500 or 
+                e.status == 429 or 
+                (e.message and "out of host capacity" in e.message.lower())
+            )
+            
+            if is_capacity_issue:
+                print(f"Capacità non disponibile.")
+                print(f"  Stato HTTP: {e.status}")
+                print(f"  Codice:     {e.code}")
+                print(f"  Messaggio:  {e.message.strip() if e.message else 'Nessun dettaglio aggiuntivo'}")
             else:
-                print(f"Errore del servizio OCI: {e.status} - {e.message}")
-                if e.status in [401, 404]:
-                    send_telegram_message(f"⚠️ *Script interrotto:* Errore di configurazione credenziali: {e.message}")
+                print("Errore del servizio OCI rilevato:")
+                print(f"  Stato HTTP: {e.status}")
+                print(f"  Codice:     {e.code}")
+                print(f"  Messaggio:  {e.message}")
+                print(f"  Request ID: {e.request_id}")
+                
+                # Interrompi lo script se le credenziali o i parametri strutturali sono errati
+                if e.status in [400, 401, 403, 404]:
+                    send_telegram_message(
+                        f"⚠️ *Script interrotto:* Errore critico ({e.status}).\n"
+                        f"*Codice:* `{e.code}`\n"
+                        f"*Messaggio:* {e.message}"
+                    )
                     sys.exit(1)
                     
         except Exception as e:
-            print(f"Errore imprevisto: {e}")
+            print(f"Errore imprevisto durante la chiamata API: {e}")
             
         time.sleep(POLL_INTERVAL)
 
